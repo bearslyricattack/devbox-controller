@@ -16,17 +16,37 @@ type Client struct {
 	Password string
 }
 
+type Manifest struct {
+	SchemaVersion int     `json:"schemaVersion"`
+	MediaType     string  `json:"mediaType"`
+	Config        Config  `json:"config"`
+	Layers        []Layer `json:"layers"`
+}
+
+type Config struct {
+	MediaType string `json:"mediaType"`
+	Digest    string `json:"digest"`
+	Size      int    `json:"size"`
+}
+
+type Layer struct {
+	MediaType string `json:"mediaType"`
+	Digest    string `json:"digest"`
+	Size      int    `json:"size"`
+}
+
 var (
 	ErrorManifestNotFound = errors.New("manifest not found")
+	ErrorMediaTypeInvalid = errors.New("media type invalid")
 )
 
 func (t *Client) TagImage(hostName string, imageName string, oldTag string, newTag string) error {
 	return retry.Do(func() error {
-		manifest, err := t.pullManifest(t.Username, t.Password, hostName, imageName, oldTag)
+		manifest, mediaType, err := t.pullManifest(t.Username, t.Password, hostName, imageName, oldTag)
 		if err != nil {
 			return err
 		}
-		return t.pushManifest(t.Username, t.Password, hostName, imageName, newTag, manifest)
+		return t.pushManifest(t.Username, t.Password, hostName, imageName, newTag, manifest, mediaType)
 	}, retry.Delay(time.Second*5), retry.Attempts(3), retry.LastErrorOnly(true))
 }
 
@@ -71,39 +91,45 @@ func (t *Client) login(authPath string, username string, password string, imageN
 	return data.Token, nil
 }
 
-func (t *Client) pullManifest(username string, password string, hostName string, imageName string, tag string) ([]byte, error) {
+func (t *Client) pullManifest(username string, password string, hostName string, imageName string, tag string) ([]byte, string, error) {
 	var (
 		client = http.DefaultClient
 		url    = "http://" + hostName + "/v2/" + imageName + "/manifests/" + tag
 	)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	req.SetBasicAuth(username, password)
-	req.Header.Set("Accept", "application/vnd.oci.image.manifest.v1+json")
+	req.Header.Set("Accept", "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrorManifestNotFound
+		return nil, "", ErrorManifestNotFound
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New(resp.Status)
+		return nil, "", errors.New(resp.Status)
 	}
 
 	bodyText, err := ioutil.ReadAll(resp.Body)
+
+	var manifest Manifest
+	err = json.Unmarshal(bodyText, &manifest)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return bodyText, nil
+	if len(manifest.MediaType) == 0 {
+		return nil, "", ErrorMediaTypeInvalid
+	}
+	return bodyText, manifest.MediaType, nil
 }
 
-func (t *Client) pushManifest(username string, password string, hostName string, imageName string, tag string, manifest []byte) error {
+func (t *Client) pushManifest(username string, password string, hostName string, imageName string, tag string, manifest []byte, mediaType string) error {
 	var (
 		client = http.DefaultClient
 		url    = "http://" + hostName + "/v2/" + imageName + "/manifests/" + tag
@@ -114,7 +140,7 @@ func (t *Client) pushManifest(username string, password string, hostName string,
 	}
 
 	req.SetBasicAuth(username, password)
-	req.Header.Set("Content-type", "application/vnd.oci.image.manifest.v1+json")
+	req.Header.Set("Content-type", mediaType)
 
 	resp, err := client.Do(req)
 	if err != nil {
