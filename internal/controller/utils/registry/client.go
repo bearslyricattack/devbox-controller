@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"io/ioutil"
+	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -72,7 +73,7 @@ func (t *Client) login(authPath string, username string, password string, imageN
 		return "", errors.New(resp.Status)
 	}
 
-	bodyText, err := ioutil.ReadAll(resp.Body)
+	bodyText, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -96,6 +97,7 @@ func (t *Client) pullManifest(username string, password string, hostName string,
 		client = http.DefaultClient
 		url    = "http://" + hostName + "/v2/" + imageName + "/manifests/" + tag
 	)
+	fmt.Println("访问的url为：" + url)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, "", err
@@ -116,7 +118,7 @@ func (t *Client) pullManifest(username string, password string, hostName string,
 		return nil, "", errors.New(resp.Status)
 	}
 
-	bodyText, err := ioutil.ReadAll(resp.Body)
+	bodyText, err := io.ReadAll(resp.Body)
 
 	var manifest Manifest
 	err = json.Unmarshal(bodyText, &manifest)
@@ -126,6 +128,7 @@ func (t *Client) pullManifest(username string, password string, hostName string,
 	if len(manifest.MediaType) == 0 {
 		return nil, "", ErrorMediaTypeInvalid
 	}
+	fmt.Println("访问的结果为：" + manifest.MediaType)
 	return bodyText, manifest.MediaType, nil
 }
 
@@ -134,6 +137,7 @@ func (t *Client) pushManifest(username string, password string, hostName string,
 		client = http.DefaultClient
 		url    = "http://" + hostName + "/v2/" + imageName + "/manifests/" + tag
 	)
+	fmt.Println("访问的url为：" + url)
 	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(manifest))
 	if err != nil {
 		return err
@@ -150,6 +154,6 @@ func (t *Client) pushManifest(username string, password string, hostName string,
 	if resp.StatusCode != http.StatusCreated {
 		return errors.New(resp.Status)
 	}
-
+	fmt.Println("访问的结果为：" + err.Error())
 	return nil
 }
