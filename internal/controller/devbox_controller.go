@@ -18,12 +18,12 @@ package controller
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	cryptorand "crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"golang.org/x/crypto/ssh"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/rand"
@@ -145,7 +145,7 @@ func (r *DevboxReconciler) syncSecret(ctx context.Context, devbox *devboxv1alpha
 		//	ObjectMeta: objectMeta,
 		//	Data:       map[string][]byte{"SEALOS_DEVBOX_PASSWORD": []byte(rand.String(12))},
 		//}
-		publicKey, privateKey, err := generatePublicAndPrivateKey()
+		publicKey, privateKey, err := generatePublicAndPrivateKey(512)
 		if err != nil {
 			logger.Error(err, "generate public and private key failed")
 		}
@@ -168,29 +168,22 @@ func (r *DevboxReconciler) syncSecret(ctx context.Context, devbox *devboxv1alpha
 	return nil
 }
 
-func generatePublicAndPrivateKey() ([]byte, []byte, error) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+func generatePublicAndPrivateKey(bits int) ([]byte, []byte, error) {
+	private, err := rsa.GenerateKey(cryptorand.Reader, bits)
 	if err != nil {
 		return []byte(""), []byte(""), err
 	}
-	publicKey := &privateKey.PublicKey
-	derPrivateKey, err := x509.MarshalECPrivateKey(privateKey)
-	if err != nil {
-		return []byte(""), []byte(""), err
-	}
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: derPrivateKey,
+	public := &private.PublicKey
+	privateKeyPem := pem.EncodeToMemory(&pem.Block{
+		Bytes: x509.MarshalPKCS1PrivateKey(private),
+		Type:  "RSA PRIVATE KEY",
 	})
-	derPublicKey, err := x509.MarshalPKIXPublicKey(publicKey)
+	publicKey, err := ssh.NewPublicKey(public)
 	if err != nil {
 		return []byte(""), []byte(""), err
 	}
-	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
-		Bytes: derPublicKey,
-	})
-	return publicKeyPEM, privateKeyPEM, nil
+	sshPublicKey := ssh.MarshalAuthorizedKey(publicKey)
+	return sshPublicKey, privateKeyPem, nil
 }
 
 func (r *DevboxReconciler) syncPod(ctx context.Context, devbox *devboxv1alpha1.Devbox, recLabels map[string]string) error {
@@ -378,7 +371,7 @@ func (r *DevboxReconciler) generateDevboxPod(ctx context.Context, devbox *devbox
 			VolumeMounts: []corev1.VolumeMount{
 				{
 					Name:      devbox.Name + "public-key-volume",
-					MountPath: "/usr/start/publicKey",
+					MountPath: "/usr/start",
 					ReadOnly:  true,
 				},
 			},
@@ -393,7 +386,7 @@ func (r *DevboxReconciler) generateDevboxPod(ctx context.Context, devbox *devbox
 					Items: []corev1.KeyToPath{
 						{
 							Key:  "SEALOS_DEVBOX_PUBLIC_KEY",
-							Path: "id_rsa.pub",
+							Path: "publicKey",
 						},
 					},
 				},
