@@ -18,6 +18,11 @@ package controller
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	cryptorand "crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"time"
 
@@ -136,9 +141,20 @@ func (r *DevboxReconciler) syncSecret(ctx context.Context, devbox *devboxv1alpha
 	// if secret not found, create a new one
 	if err != nil && client.IgnoreNotFound(err) == nil {
 		// set password to context, if error then no need to update secret
+		//secret := &corev1.Secret{
+		//	ObjectMeta: objectMeta,
+		//	Data:       map[string][]byte{"SEALOS_DEVBOX_PASSWORD": []byte(rand.String(12))},
+		//}
+		publicKey, privateKey, err := generatePublicAndPrivateKey()
+		if err != nil {
+			logger.Error(err, "generate public and private key failed")
+		}
 		secret := &corev1.Secret{
 			ObjectMeta: objectMeta,
-			Data:       map[string][]byte{"SEALOS_DEVBOX_PASSWORD": []byte(rand.String(12))},
+			Data: map[string][]byte{
+				"SEALOS_DEVBOX_PUBLIC_KEY":  publicKey,
+				"SEALOS_DEVBOX_PRIVATE_KEY": privateKey,
+			},
 		}
 		if err := controllerutil.SetControllerReference(devbox, secret, r.Scheme); err != nil {
 			return err
@@ -150,6 +166,31 @@ func (r *DevboxReconciler) syncSecret(ctx context.Context, devbox *devboxv1alpha
 		return nil
 	}
 	return nil
+}
+
+func generatePublicAndPrivateKey() ([]byte, []byte, error) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		return []byte(""), []byte(""), err
+	}
+	publicKey := &privateKey.PublicKey
+	derPrivateKey, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		return []byte(""), []byte(""), err
+	}
+	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: derPrivateKey,
+	})
+	derPublicKey, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return []byte(""), []byte(""), err
+	}
+	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: derPublicKey,
+	})
+	return publicKeyPEM, privateKeyPEM, nil
 }
 
 func (r *DevboxReconciler) syncPod(ctx context.Context, devbox *devboxv1alpha1.Devbox, recLabels map[string]string) error {
@@ -345,13 +386,38 @@ func (r *DevboxReconciler) generateDevboxPod(ctx context.Context, devbox *devbox
 					"memory": devbox.Spec.Resource["memory"],
 				},
 			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      devbox.Name + "public-key-volume",
+					MountPath: "/usr/start/publicKey",
+					ReadOnly:  true,
+				},
+			},
 		},
 	}
+	volume := []corev1.Volume{
+		{
+			Name: devbox.Name + "public-key-volume",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: devbox.Name,
+					Items: []corev1.KeyToPath{
+						{
+							Key:  "SEALOS_DEVBOX_PUBLIC_KEY",
+							Path: "id_rsa.pub",
+						},
+					},
+				},
+			},
+		},
+	}
+
 	expectPod := &corev1.Pod{
 		ObjectMeta: objectMeta,
 		Spec: corev1.PodSpec{
 			RestartPolicy:                 corev1.RestartPolicyNever,
 			Containers:                    containers,
+			Volumes:                       volume,
 			TerminationGracePeriodSeconds: pointer.Int64(300),
 		},
 	}
